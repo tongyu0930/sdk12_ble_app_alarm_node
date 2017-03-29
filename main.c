@@ -40,32 +40,31 @@
 #include "app_mpu.h"
 
 
-#define CENTRAL_LINK_COUNT       		0  /**< Number of central links used by the application. When changing this number remember to adjust the RAM settings*/
-#define PERIPHERAL_LINK_COUNT    		1  /**< Number of peripheral links used by the application. When changing this number remember to adjust the RAM settings*/
-#define IS_SRVC_CHANGED_CHARACT_PRESENT 0 /**< 不懂Include or not the service_changed characteristic. if not enabled, the server's database cannot be changed for the lifetime of the device*/
+#define CENTRAL_LINK_COUNT       		0   		/**< Number of central links used by the application. When changing this number remember to adjust the RAM settings*/
+#define PERIPHERAL_LINK_COUNT    		1   		/**< Number of peripheral links used by the application. When changing this number remember to adjust the RAM settings*/
+#define IS_SRVC_CHANGED_CHARACT_PRESENT 0   		/**< Include or not the service_changed characteristic. if not enabled, the server's database cannot be changed for the lifetime of the device*/
 #define DEAD_BEEF                       0xDEADBEEF  /**< Value used as error code on stack dump, can be used to identify stack location on stack unwind. */
 
-#define APP_TIMER_PRESCALER             0   /**< Value of the RTC1 PRESCALER register. */
-#define APP_TIMER_OP_QUEUE_SIZE         4   /**< Size of timer operation queues. */
+#define APP_TIMER_PRESCALER             0   		/**< Value of the RTC1 PRESCALER register. */
+#define APP_TIMER_OP_QUEUE_SIZE         4   		/**< Size of timer operation queues. */
 APP_TIMER_DEF(alarm_timer_id1);
 APP_TIMER_DEF(alarm_timer_id2);
 
 
 #define     						SELF_NUMBER 		  	5
-#define     						ALARM_SENDING_TIME		5
+#define     						ALARM_SENDING_TIME_MIN	5
 #define     						ALARM_SENDING_TIME_MAX	30
-#define     						ADV_INTERVAL			500
-#define     						IMU_GET_INTERVAL		5
-#define     						V_THRESHOLD				7 //0.7 // m/s
-#define     						RSS_THRESHOLD			28//2.8 // 2.8*g
+#define     						ADV_INTERVAL			500			// 500 ms
+#define     						IMU_GET_INTERVAL		5			// 5 ms // 200 Hz
+#define     						V_THRESHOLD				7 			//0.7 // m/s
+#define     						RSS_THRESHOLD			28			//2.8 // 2.8*g
 volatile static bool 				want_scan 			= false;
 volatile static bool 				alarm_event 		= false;
-volatile static bool 				begin 			= true;
+volatile static bool 				begin 				= true;
 		 static accel_values_t 		acc_values;
 		 static bool                get_imu				= true;
-		 static uint8_t				advertising_count	= 0;
-		 static bool 				ACK 				= false;
-		 static uint8_t				alarm_count			= 0;
+		 static bool 				ACK_received 		= false;
+		 static uint8_t				sending_time_count	= 0;
 
 static enum
 {
@@ -213,9 +212,8 @@ static void app_timer_handler1(void * p_context)
 			err_code = sd_ble_gap_scan_stop();
 			APP_ERROR_CHECK(err_code);
 
-			alarm_count++;
-			advertising_count++;
-			uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,0,alarm_count,SELF_NUMBER};
+			sending_time_count++;
+			uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,0,sending_time_count,SELF_NUMBER};
 			sd_ble_gap_adv_data_set(alarm, sizeof(alarm), NULL, 0);
 			advertising_start();
 
@@ -297,14 +295,14 @@ static void get_adv_data(ble_evt_t * p_ble_evt)
 			case CENTER_NODE:
 				if((p_data[a+10] - 48) * 16 + (p_data[a+11] - 48) == SELF_NUMBER) // "TONG0100" + "alarm node number"
 				{
-					ACK = true;
+					ACK_received = true;
 				}
 				break;
 
 			case RELAY_NODE:
 				if(p_data[a+7] == SELF_NUMBER)
 				{
-					ACK = true;
+					ACK_received = true;
 				}
 				break;
 
@@ -321,7 +319,7 @@ static void try_stop_advertising(void)
 {
 	uint32_t err_code;
 
-	if(((alarm_count >= ALARM_SENDING_TIME) && (ACK == true)) || (advertising_count >= ALARM_SENDING_TIME_MAX))
+	if(((sending_time_count >= ALARM_SENDING_TIME_MIN) && (ACK_received == true)) || (sending_time_count >= ALARM_SENDING_TIME_MAX))
 	{
 		if(want_scan)
 		{
@@ -337,10 +335,9 @@ static void try_stop_advertising(void)
 		err_code = app_timer_stop(alarm_timer_id1);
 		APP_ERROR_CHECK(err_code);
 		begin = true;
-		ACK = false;
+		ACK_received = false;
 		alarm_event = false;
-		advertising_count = 0;
-		alarm_count = 0;
+		sending_time_count = 0;
 		NRF_GPIO->OUT |= (1 << 20);
 	}
 }
