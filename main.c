@@ -12,6 +12,8 @@
 
 /** @file
  *
+ * release
+ *
  * @defgroup ble_sdk_app_beacon_main main.c
  * @{
  * @ingroup ble_sdk_app_beacon
@@ -19,20 +21,17 @@
  *
  * This file contains the source code for an Beacon transmitter sample application.
  */
-// 最后在删减makefile
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <math.h>
-#include "ble_advdata.h"
 #include "nordic_common.h"
 #include "softdevice_handler.h"
-#include "bsp.h"
 #include "app_timer.h"
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
 #include "boards.h"
 #include "app_error.h"
-#include "nrf_delay.h"
 #include "nrf_gpio.h"
 #include "relay.h"
 #include "nrf_error.h"
@@ -52,19 +51,41 @@ APP_TIMER_DEF(alarm_timer_id2);
 
 
 #define     						SELF_NUMBER 		  	5
-#define     						ALARM_SENDING_TIME_MIN	5
-#define     						ALARM_SENDING_TIME_MAX	30
-#define     						ADV_INTERVAL			500			// 500 ms
-#define     						IMU_GET_INTERVAL		5			// 5 ms // 200 Hz
+#define     						ALARM_SENDING_TIME_MIN	5			// 2500 ms
+#define     						ALARM_SENDING_TIME_MAX	30			// 15000 ms
+#define     						ADV_COUNT_INTERVAL		500			// timer1 interval 500 ms
+#define     						IMU_GET_INTERVAL		5			// timer2 5 ms // 200 Hz
 #define     						V_THRESHOLD				7 			//0.7 // m/s
 #define     						RSS_THRESHOLD			28			//2.8 // 2.8*g
-volatile static bool 				want_scan 			= false;
-volatile static bool 				alarm_event 		= false;
-volatile static bool 				begin 				= true;
+#define								Y_AXIS_OFFSET		   -112
+#define								Z_AXIS_OFFSET			560
+
+volatile static bool 				fall_detected 			= false;
+volatile static bool 				ACK_received 			= false;
+volatile static bool                get_acceleration		= true;
 		 static accel_values_t 		acc_values;
-		 static bool                get_imu				= true;
-		 static bool 				ACK_received 		= false;
-		 static uint8_t				sending_time_count	= 0;
+		 static uint8_t				advertising_time_count	= 0;
+		 static uint16_t 			g_relative 				= 0;	// the gravity according to IMU value
+		 static uint32_t 			v_relative_threshold 	= 0; 	// m/s
+		 static uint32_t 			rss_relative_threshold 	= 0; 	// 2.8*g
+		 static int32_t 			v 						= 0;	// Speed
+		 static bool 				speed 					= false;
+		 static bool 				impact 					= false;
+		 static bool 				angle 					= false;
+		 static bool 				cali 					= true;
+		 static int32_t 			acc_relative 			= 0;
+		 static uint16_t 			angle_time_count 			= 0;
+		 static uint16_t 			cosine_time_count 			= 0;
+		 static int32_t 			cali_x 					= 0;
+		 static int32_t 			cali_y 					= 0;
+		 static int32_t 			cali_z 					= 0;
+		 static int16_t 			x 						= 0;
+		 static int16_t 			y 						= 0;
+		 static int16_t 			z 						= 0;
+		 static uint8_t 			speed_sample_count 					= 0;
+		 static uint8_t 			cali_count 				= 0;
+
+
 
 static enum
 {
@@ -76,7 +97,6 @@ static enum
 const ble_gap_adv_params_t m_adv_params =
   {
 	.type        					= BLE_GAP_ADV_TYPE_ADV_IND,					// Undirected advertisement.
-	//.p_peer_addr->addr_type 		= BLE_GAP_ADDR_TYPE_RANDOM_STATIC,
 	.p_peer_addr					= NULL,												// 我觉得null是不是默认就是static的address？
 	.fp          					= BLE_GAP_ADV_FP_ANY,
 	.interval    					= 0x0020, // 20 ms+ random delay(0-10ms)						// 虽然这个最小值时100ms，但是你可以通过timer以更快的频率启动关闭广播。
@@ -102,17 +122,6 @@ static void start_loop(void);
 
 
 
-void HardFault_Handler(void)  //重写HardFault_Handler
-{
-    uint32_t *sp = (uint32_t *) __get_MSP();
-    uint32_t ia = sp[24/4];
-    NRF_LOG_INFO("Hard Fault at address: 0x%08x\r\n", (unsigned int)ia);
-    while(1)
-    	;
-}
-
-
-
 /**@brief Callback function for asserts in the SoftDevice.
  *
  * @details This function will be called in case of an assert in the SoftDevice.
@@ -130,105 +139,23 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
 }
 
 
-void app_error_fault_handler(uint32_t id, uint32_t pc, uint32_t info)  //重写app_error_fault_handler
-{
-    // static error variables - in order to prevent removal by optimizers
-    static volatile struct
-    {
-        uint32_t        fault_id;
-        uint32_t        pc;
-        uint32_t        error_info;
-        assert_info_t * p_assert_info;
-        error_info_t  * p_error_info;
-        ret_code_t      err_code;
-        uint32_t        line_num;
-        const uint8_t * p_file_name;
-    } m_error_data = {0};
-
-    // The following variable helps Keil keep the call stack visible, in addition, it can be set to
-    // 0 in the debugger to continue executing code after the error check.
-    volatile bool loop = true;
-    UNUSED_VARIABLE(loop);
-
-    m_error_data.fault_id   = id;
-    m_error_data.pc         = pc;
-    m_error_data.error_info = info;
-
-    switch (id)
-    {
-        case NRF_FAULT_ID_SDK_ASSERT:
-            m_error_data.p_assert_info = (assert_info_t *)info;
-            m_error_data.line_num      = m_error_data.p_assert_info->line_num;
-            m_error_data.p_file_name   = m_error_data.p_assert_info->p_file_name;
-            break;
-
-        case NRF_FAULT_ID_SDK_ERROR:
-            m_error_data.p_error_info = (error_info_t *)info;
-            m_error_data.err_code     = m_error_data.p_error_info->err_code;
-            m_error_data.line_num     = m_error_data.p_error_info->line_num;
-            m_error_data.p_file_name  = m_error_data.p_error_info->p_file_name;
-            break;
-    }
-
-    UNUSED_VARIABLE(m_error_data);
-
-    //NRF_LOG_INFO("ASSERT\r\n\tError: 0x%08x\r\n\tLine: %d\r\n\tFile: %s\r\n", m_error_data.err_code, m_error_data.line_num, m_error_data.p_file_name);
-    NRF_LOG_INFO("error!!!");
-
-    // If printing is disrupted, remove the irq calls, or set the loop variable to 0 in the debugger.
-    __disable_irq();
-
-    while(loop);
-
-    __enable_irq();
-}
-
-
 static void app_timer_handler1(void * p_context)
 {
+	uint32_t err_code;
 	NRF_GPIO->OUT ^= (1 << 20);
-	uint32_t      err_code;
-
-	if(begin)
-	{
-		advertising_start();
-
-		begin 	= false;
-		want_scan 	= true;
-	}else
-	{
-		if(want_scan)
-		{
-			err_code = sd_ble_gap_adv_stop();
-			APP_ERROR_CHECK(err_code);
-
-			scanning_start();
-
-			NRF_LOG_INFO("scanning\r\n");
-			want_scan = false;
-
-		}else
-		{
-			err_code = sd_ble_gap_scan_stop();
-			APP_ERROR_CHECK(err_code);
-
-			sending_time_count++;
-			uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,0,sending_time_count,SELF_NUMBER};
-			sd_ble_gap_adv_data_set(alarm, sizeof(alarm), NULL, 0);
-			advertising_start();
-
-			NRF_LOG_INFO("broadcasting\r\n");
-			want_scan = true;
-		}
-	}
-
+	advertising_time_count++;
+	err_code = sd_ble_gap_adv_stop();
+	APP_ERROR_CHECK(err_code);
+	uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,0,advertising_time_count,SELF_NUMBER};
+	sd_ble_gap_adv_data_set(alarm, sizeof(alarm), NULL, 0);
+	advertising_start();
 	try_stop_advertising();
 }
 
 
 static void app_timer_handler2(void * p_context) // 网上说，因为timer handler interrupt和spi interrupt冲突了，建议还是把spi放到main里
 {
-	get_imu = true;
+	get_acceleration = true;
 }
 
 
@@ -250,10 +177,6 @@ static void scanning_start(void)
 
 static void get_adv_data(ble_evt_t * p_ble_evt)
 {
-//	NRF_GPIO->OUT ^= (1 << 18);
-//	NRF_LOG_INFO("TTT\r\n");
-//	return;
-
 	uint32_t index = 0;
 	ble_gap_evt_t * p_gap_evt = &p_ble_evt->evt.gap_evt;
 	ble_gap_evt_adv_report_t * p_adv_report = &p_gap_evt->params.adv_report; // 这个report里还有peer地址，信号强度等可以利用的信息。
@@ -319,25 +242,20 @@ static void try_stop_advertising(void)
 {
 	uint32_t err_code;
 
-	if(((sending_time_count >= ALARM_SENDING_TIME_MIN) && (ACK_received == true)) || (sending_time_count >= ALARM_SENDING_TIME_MAX))
+	if(((advertising_time_count >= ALARM_SENDING_TIME_MIN) && (ACK_received == true)) || (advertising_time_count >= ALARM_SENDING_TIME_MAX))
 	{
-		if(want_scan)
-		{
-			err_code = sd_ble_gap_adv_stop();
-			APP_ERROR_CHECK(err_code);
 
-		}else
-		{
-			err_code = sd_ble_gap_scan_stop();
-			APP_ERROR_CHECK(err_code);
-		}
+		err_code = sd_ble_gap_adv_stop();
+		APP_ERROR_CHECK(err_code);
+
+		err_code = sd_ble_gap_scan_stop();
+		APP_ERROR_CHECK(err_code);
 
 		err_code = app_timer_stop(alarm_timer_id1);
 		APP_ERROR_CHECK(err_code);
-		begin = true;
 		ACK_received = false;
-		alarm_event = false;
-		sending_time_count = 0;
+		fall_detected = false;
+		advertising_time_count = 0;
 		NRF_GPIO->OUT |= (1 << 20);
 	}
 }
@@ -388,73 +306,21 @@ static void power_manage(void)
     APP_ERROR_CHECK(err_code);
 }
 
-
-void GPIOTE_IRQHandler(void)
-{
-	uint32_t err_code;
-
-    if (NRF_GPIOTE->EVENTS_IN[1] != 0) // button1 开启关闭 广播
-    {
-    	nrf_delay_us(200000);
-        NRF_GPIOTE->EVENTS_IN[1] = 0;
-
-        if(begin)
-		{
-			err_code = app_timer_start(alarm_timer_id1, APP_TIMER_TICKS(200, APP_TIMER_PRESCALER), NULL); // 每100ms就触发一次handler
-			APP_ERROR_CHECK(err_code);
-		}else
-		{
-			if(want_scan)
-			{
-				err_code = sd_ble_gap_adv_stop();
-				APP_ERROR_CHECK(err_code);
-
-			}else
-			{
-				err_code = sd_ble_gap_scan_stop();
-				APP_ERROR_CHECK(err_code);
-			}
-
-			err_code = app_timer_stop(alarm_timer_id1);
-			APP_ERROR_CHECK(err_code);
-			begin = true;
-		}
-    }
-}
-
 static void start_loop(void)
 {
 	uint32_t err_code;
-
-	if(begin)
-	{
-		err_code = app_timer_start(alarm_timer_id1, APP_TIMER_TICKS(ADV_INTERVAL, APP_TIMER_PRESCALER), NULL); // 每100ms就触发一次handler
-		APP_ERROR_CHECK(err_code);
-	}
+	uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,0,advertising_time_count,SELF_NUMBER};
+	sd_ble_gap_adv_data_set(alarm, sizeof(alarm), NULL, 0);
+	advertising_start();
+	scanning_start();
+	err_code = app_timer_start(alarm_timer_id1, APP_TIMER_TICKS(ADV_COUNT_INTERVAL, APP_TIMER_PRESCALER), NULL); // timer1 interval = 500 ms
+	APP_ERROR_CHECK(err_code);
 }
 
 static void gpio_configure(void)
 {
 	NRF_GPIO->DIRSET = LEDS_MASK; // set register
 	NRF_GPIO->OUTSET = LEDS_MASK; // clear register
-
-	NRF_GPIO->PIN_CNF[BUTTON_1] = (GPIO_PIN_CNF_DIR_Input     << GPIO_PIN_CNF_DIR_Pos)   |
-								  (GPIO_PIN_CNF_INPUT_Connect << GPIO_PIN_CNF_INPUT_Pos) |
-								  (GPIO_PIN_CNF_PULL_Pullup   << GPIO_PIN_CNF_PULL_Pos);
-
-	nrf_delay_us(5000);																			// Do I have to delay?
-
-	NRF_GPIOTE->CONFIG[1] = (GPIOTE_CONFIG_MODE_Event      << GPIOTE_CONFIG_MODE_Pos)     |
-							(GPIOTE_CONFIG_OUTINIT_Low     << GPIOTE_CONFIG_OUTINIT_Pos)  |
-							(GPIOTE_CONFIG_POLARITY_HiToLo << GPIOTE_CONFIG_POLARITY_Pos) |
-							(BUTTON_1                      << GPIOTE_CONFIG_PSEL_Pos);
-
-
-	// Interrupt
-	NRF_GPIOTE->INTENSET = GPIOTE_INTENSET_IN1_Msk;
-	NVIC_ClearPendingIRQ(GPIOTE_IRQn);
-	NVIC_SetPriority(GPIOTE_IRQn, APP_IRQ_PRIORITY_LOWEST);
-	NVIC_EnableIRQ(GPIOTE_IRQn); 											 					//declaration值得一看！！！有关IRQ
 }
 
 
@@ -479,26 +345,8 @@ static void mpu_setup(void)
 int main(void)
 {
     uint32_t err_code;
-    int32_t acc_relative = 0;
-    bool speed = false;
-    bool impact = false;
-    bool angle = false;
-    uint16_t angle_count = 0;
-    uint16_t cosine_count = 0;
-    int32_t cali_x = 0;
-    int32_t cali_y = 0;
-    int32_t cali_z = 0;
-    int16_t x = 0;
-    int16_t y = 0;
-    int16_t z = 0;
-    uint8_t count = 0;
-    uint16_t g_relative = 0;
-    int32_t v = 0;
-    uint8_t cali_count = 0;
-    bool 	cali = true;
-    uint32_t v_relative_threshold = 0; // m/s
-    uint32_t rss_relative_threshold = 0; // 2.8*g
-    int16_t cosine = 0;
+
+    int16_t cosine 				= 0;
 
     err_code = NRF_LOG_INIT(NULL);
     APP_ERROR_CHECK(err_code);
@@ -508,12 +356,12 @@ int main(void)
     APP_ERROR_CHECK(err_code);
     err_code = app_timer_create(&alarm_timer_id2, APP_TIMER_MODE_REPEATED, app_timer_handler2);
     APP_ERROR_CHECK(err_code);
-    err_code = app_timer_start(alarm_timer_id2, APP_TIMER_TICKS(IMU_GET_INTERVAL, APP_TIMER_PRESCALER), NULL); // 每200ms就触发一次handler
+    err_code = app_timer_start(alarm_timer_id2, APP_TIMER_TICKS(IMU_GET_INTERVAL, APP_TIMER_PRESCALER), NULL); // timer2 interval 5 ms
     APP_ERROR_CHECK(err_code);
     ble_stack_init();
 	err_code = sd_ble_gap_tx_power_set(-20);
 	APP_ERROR_CHECK(err_code);
-    gpio_configure(); // 注意gpio和timesync是相对独立的，同步时钟本质上不需要gpio
+    gpio_configure();
     mpu_setup();
 
 
@@ -528,31 +376,30 @@ int main(void)
 
     for (;; )
     {
-    	if(get_imu && !alarm_event) //200 Hz
+    	if(get_acceleration && !fall_detected) //the program will get here at 200 Hz
     	{
 			err_code = mpu_read_accel(&acc_values);
 			APP_ERROR_CHECK(err_code);
+
 //			NRF_LOG_INFO("X: %06d   Y: %06d   Z: %06d\r\n", acc_values.x, acc_values.y, acc_values.z);
 //			if(acc_values.x != 0)
 //			{
 //				NRF_GPIO->OUT ^= (1 << 17);
 //			}
 
-
-
-			if(cali)
+			if(cali)	// at the beginning of the program, the device will measure the gravity vector, do not shake the device.
 			{
 				cali_count++;
 				cali_x += acc_values.x;
-				cali_y += acc_values.y - 112;
-				cali_z += acc_values.z + 560;
+				cali_y += acc_values.y + Y_AXIS_OFFSET;
+				cali_z += acc_values.z + Z_AXIS_OFFSET;
 				if(cali_count == 200)
 				{
 					cali = false;
-					x = cali_x/200;
-					y = cali_y/200;
-					z = cali_z/200;
-					g_relative = sqrt(x*x+y*y+z*z);
+					x = cali_x / 200;
+					y = cali_y / 200;
+					z = cali_z / 200;
+					g_relative = sqrt(x * x + y * y + z * z);
 
 //					g_relative = 8300;
 					v_relative_threshold = V_THRESHOLD * g_relative;
@@ -561,20 +408,20 @@ int main(void)
 				}
 			}else
 			{
-				uint16_t value = sqrt((acc_values.x)*(acc_values.x) + (acc_values.y-112)*(acc_values.y-112) + (acc_values.z+560)*(acc_values.z+560));
+				uint16_t value = sqrt((acc_values.x) * (acc_values.x) + (acc_values.y + Y_AXIS_OFFSET)*(acc_values.y + Y_AXIS_OFFSET) + (acc_values.z + Z_AXIS_OFFSET) * (acc_values.z + Z_AXIS_OFFSET));
 
-				count++;
-				if(count == 4) // 50Hz
+				speed_sample_count++;
+				if(speed_sample_count == 4) // reduce to 50Hz sample rate for speed monitor
 				{
-					count = 0;
+					speed_sample_count = 0;
 
 					acc_relative += (g_relative - value);
 
-					if((acc_relative > 0) && ((unsigned)acc_relative > 100))
+					if((acc_relative > 0) && ((unsigned)acc_relative > 100)) //"(unsigned)acc_relative > 100" is for the jittering value
 					{
-						v += acc_relative*2; //0.020 s
+						v += acc_relative * 2; // "2" represents 0.020 s, to make sure all the math operations are interger operations.
 
-						if((unsigned)v > v_relative_threshold*1000/981)
+						if((unsigned)v > v_relative_threshold * 1000 / 981)
 						{
 							speed = true;
 							NRF_LOG_INFO("velocity: %09d\r\n", value);
@@ -586,21 +433,19 @@ int main(void)
 					acc_relative = 0;
 				}
 
-
-				if(value*10 > rss_relative_threshold)
+				if(value*10 > rss_relative_threshold)	// impact monitor
 				{
 					impact = true;
 					NRF_LOG_INFO("impact\r\n");
 				}
 
-
 				if(impact || speed)
 				{
-					angle_count++;
+					angle_time_count++;
 
-					if(angle_count >= 599)
+					if(angle_time_count >= 599)
 					{
-						if(cosine_count >= 299) // 400*0.75
+						if(cosine_time_count >= 299) // 400*0.75 = 300
 						{
 							angle = true;
 						}else
@@ -608,33 +453,33 @@ int main(void)
 							impact = false;
 							speed = false;
 						}
-						cosine_count = 0;
-						angle_count = 0;
+						cosine_time_count = 0;
+						angle_time_count = 0;
 					}
 
-					if(angle_count >= 199)
+					if(angle_time_count >= 199)
 					{
-						cosine = (10 * (x*acc_values.x + y*(acc_values.y - 112) + z*(acc_values.z + 560))) / (g_relative * value);
+						cosine = (10 * (x*acc_values.x + y*(acc_values.y + Y_AXIS_OFFSET) + z*(acc_values.z + Z_AXIS_OFFSET))) / (g_relative * value);
 						if(((unsigned)cosine < 5) || (cosine < 0))
 						{
-							cosine_count++;
+							cosine_time_count++;
 						}
 					}
 				}
 
 				if(speed && impact && angle)
 				{
-					if(alarm_event == false)
+					if(fall_detected == false)
 					{
-						alarm_event = true;
-						impact = false;
-						speed = false;
-						angle = false;
+						fall_detected 	= true;
+						impact 			= false;
+						speed 			= false;
+						angle 			= false;
 						start_loop();
 					}
 				}
 			}
-			get_imu = false;
+			get_acceleration = false;
     	}
 
         if (NRF_LOG_PROCESS() == false)
