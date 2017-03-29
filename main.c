@@ -1,25 +1,9 @@
-/* Copyright (c) 2014 Nordic Semiconductor. All Rights Reserved.
+/*
+ *  alarm node
  *
- * The information contained herein is property of Nordic Semiconductor ASA.
- * Terms and conditions of usage are described in detail in NORDIC
- * SEMICONDUCTOR STANDARD SOFTWARE LICENSE AGREEMENT.
+ *  main.c
  *
- * Licensees are granted free, non-transferable use of the information. NO
- * WARRANTY of ANY KIND is provided. This heading must NOT be removed from
- * the file.
- *
- */
-
-/** @file
- *
- * release
- *
- * @defgroup ble_sdk_app_beacon_main main.c
- * @{
- * @ingroup ble_sdk_app_beacon
- * @brief Beacon Transmitter Sample Application main file.
- *
- * This file contains the source code for an Beacon transmitter sample application.
+ *  release
  */
 
 #include <stdbool.h>
@@ -31,10 +15,8 @@
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
 #include "boards.h"
-#include "app_error.h"
 #include "nrf_gpio.h"
 #include "relay.h"
-#include "nrf_error.h"
 #include "nrf.h"
 #include "app_mpu.h"
 
@@ -97,9 +79,9 @@ static enum
 const ble_gap_adv_params_t m_adv_params =
   {
 	.type        					= BLE_GAP_ADV_TYPE_ADV_IND,					// Undirected advertisement.
-	.p_peer_addr					= NULL,												// 我觉得null是不是默认就是static的address？
+	.p_peer_addr					= NULL,
 	.fp          					= BLE_GAP_ADV_FP_ANY,
-	.interval    					= 0x0020, // 20 ms+ random delay(0-10ms)						// 虽然这个最小值时100ms，但是你可以通过timer以更快的频率启动关闭广播。
+	.interval    					= 0x0020, // 20 ms+ random delay(0-10ms)
 	.timeout     					= 0
   };
 
@@ -109,7 +91,7 @@ const ble_gap_scan_params_t m_scan_params =
     .use_whitelist   				= 0,
     .adv_dir_report 				= 0,
     .interval    					= 0x0040,	//1 second
-    .window      					= 0x0040, //0x0030 is 30ms
+    .window      					= 0x0040,   //0x0030 is 30ms
     .timeout     					= 0
   };
 
@@ -121,31 +103,11 @@ static void try_stop_advertising(void);
 static void start_loop(void);
 
 
-
-/**@brief Callback function for asserts in the SoftDevice.
- *
- * @details This function will be called in case of an assert in the SoftDevice.
- *
- * @warning This handler is an example only and does not fit a final product. You need to analyze how your product is supposed to react in case of Assert.
- *
- * @warning On assert from the SoftDevice, the system can only recover on reset.
- *
- * @param[in]   line_num   Line number of the failing ASSERT call.
- * @param[in]   file_name  File name of the failing ASSERT call.
- */
-void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
-{
-    app_error_handler(DEAD_BEEF, line_num, p_file_name);
-}
-
-
 static void app_timer_handler1(void * p_context)
 {
-	uint32_t err_code;
 	NRF_GPIO->OUT ^= (1 << 20);
 	advertising_time_count++;
-	err_code = sd_ble_gap_adv_stop();
-	APP_ERROR_CHECK(err_code);
+	sd_ble_gap_adv_stop();
 	uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,0,advertising_time_count,SELF_NUMBER};
 	sd_ble_gap_adv_data_set(alarm, sizeof(alarm), NULL, 0);
 	advertising_start();
@@ -153,7 +115,7 @@ static void app_timer_handler1(void * p_context)
 }
 
 
-static void app_timer_handler2(void * p_context) // 网上说，因为timer handler interrupt和spi interrupt冲突了，建议还是把spi放到main里
+static void app_timer_handler2(void * p_context) // timer handler interrupt and spi interrupt cannot coexist, it is a bug. So, no spi interrupt.
 {
 	get_acceleration = true;
 }
@@ -161,17 +123,13 @@ static void app_timer_handler2(void * p_context) // 网上说，因为timer hand
 
 static void advertising_start(void)
 {
-    uint32_t err_code;
-    err_code = sd_ble_gap_adv_start(&m_adv_params);
-    APP_ERROR_CHECK(err_code);
+    sd_ble_gap_adv_start(&m_adv_params);
 }
 
 
 static void scanning_start(void)
 {
-    uint32_t err_code;
-    err_code = sd_ble_gap_scan_start(&m_scan_params);
-    APP_ERROR_CHECK(err_code);
+    sd_ble_gap_scan_start(&m_scan_params);
 }
 
 
@@ -179,12 +137,11 @@ static void get_adv_data(ble_evt_t * p_ble_evt)
 {
 	uint32_t index = 0;
 	ble_gap_evt_t * p_gap_evt = &p_ble_evt->evt.gap_evt;
-	ble_gap_evt_adv_report_t * p_adv_report = &p_gap_evt->params.adv_report; // 这个report里还有peer地址，信号强度等可以利用的信息。
+	ble_gap_evt_adv_report_t * p_adv_report = &p_gap_evt->params.adv_report;
 	uint8_t *p_data = (uint8_t *) p_adv_report->data;
 
 	while (index < p_adv_report->dlen)
 	{
-		//uint32_t err_code;
 		uint8_t  field_length = p_data[index];
 		uint8_t  field_type = p_data[index + 1];
 
@@ -240,19 +197,12 @@ static void get_adv_data(ble_evt_t * p_ble_evt)
 
 static void try_stop_advertising(void)
 {
-	uint32_t err_code;
-
 	if(((advertising_time_count >= ALARM_SENDING_TIME_MIN) && (ACK_received == true)) || (advertising_time_count >= ALARM_SENDING_TIME_MAX))
 	{
 
-		err_code = sd_ble_gap_adv_stop();
-		APP_ERROR_CHECK(err_code);
-
-		err_code = sd_ble_gap_scan_stop();
-		APP_ERROR_CHECK(err_code);
-
-		err_code = app_timer_stop(alarm_timer_id1);
-		APP_ERROR_CHECK(err_code);
+		sd_ble_gap_adv_stop();
+		sd_ble_gap_scan_stop();
+		app_timer_stop(alarm_timer_id1);
 		ACK_received = false;
 		fall_detected = false;
 		advertising_time_count = 0;
@@ -278,23 +228,13 @@ static void ble_evt_dispatch(ble_evt_t * p_ble_evt)
  */
 static void ble_stack_init(void)
 {
-    uint32_t err_code;
     nrf_clock_lf_cfg_t clock_lf_cfg = NRF_CLOCK_LFCLKSRC;
-
     SOFTDEVICE_HANDLER_INIT(&clock_lf_cfg, NULL); 													// Initialize the SoftDevice handler module.
-
     ble_enable_params_t ble_enable_params;
-
-    err_code = softdevice_enable_get_default_config(CENTRAL_LINK_COUNT, PERIPHERAL_LINK_COUNT, &ble_enable_params);
-    APP_ERROR_CHECK(err_code);
-
+    softdevice_enable_get_default_config(CENTRAL_LINK_COUNT, PERIPHERAL_LINK_COUNT, &ble_enable_params);
     CHECK_RAM_START_ADDR(CENTRAL_LINK_COUNT,PERIPHERAL_LINK_COUNT);									//Check the ram settings against the used number of links
-
-    err_code = softdevice_enable(&ble_enable_params); 												// Enable BLE stack.
-    APP_ERROR_CHECK(err_code);
-
-    err_code = softdevice_ble_evt_handler_set(ble_evt_dispatch); 									// Register with the SoftDevice handler module for BLE events.
-    APP_ERROR_CHECK(err_code);
+    softdevice_enable(&ble_enable_params); 															// Enable BLE stack.
+    softdevice_ble_evt_handler_set(ble_evt_dispatch); 												// Register with the SoftDevice handler module for BLE events.
 }
 
 
@@ -302,19 +242,16 @@ static void ble_stack_init(void)
  */
 static void power_manage(void)
 {
-    uint32_t err_code = sd_app_evt_wait();
-    APP_ERROR_CHECK(err_code);
+    sd_app_evt_wait();
 }
 
 static void start_loop(void)
 {
-	uint32_t err_code;
 	uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,0,advertising_time_count,SELF_NUMBER};
 	sd_ble_gap_adv_data_set(alarm, sizeof(alarm), NULL, 0);
 	advertising_start();
 	scanning_start();
-	err_code = app_timer_start(alarm_timer_id1, APP_TIMER_TICKS(ADV_COUNT_INTERVAL, APP_TIMER_PRESCALER), NULL); // timer1 interval = 500 ms
-	APP_ERROR_CHECK(err_code);
+	app_timer_start(alarm_timer_id1, APP_TIMER_TICKS(ADV_COUNT_INTERVAL, APP_TIMER_PRESCALER), NULL); // timer1 interval = 500 ms
 }
 
 static void gpio_configure(void)
@@ -323,19 +260,13 @@ static void gpio_configure(void)
 	NRF_GPIO->OUTSET = LEDS_MASK; // clear register
 }
 
-
 static void mpu_setup(void)
 {
-    ret_code_t ret_code;
-    ret_code = mpu_init();
-    APP_ERROR_CHECK(ret_code); // Check for errors in return value
-
-    // Setup and configure the MPU with intial values
-    mpu_config_t p_mpu_config = MPU_DEFAULT_CONFIG(); // Load default values
+    mpu_init();
+    mpu_config_t p_mpu_config = MPU_DEFAULT_CONFIG();
     p_mpu_config.smplrt_div = 4;   // Change sampelrate. Sample Rate = Gyroscope Output Rate / (1 + SMPLRT_DIV). 19 gives a sample rate of 50Hz
-    p_mpu_config.accel_config.afs_sel = AFS_4G; // Set accelerometer full scale range to 2G
-    ret_code = mpu_config(&p_mpu_config); // Configure the MPU with above values
-    APP_ERROR_CHECK(ret_code); // Check for errors in return value
+    p_mpu_config.accel_config.afs_sel = AFS_4G; // Set accelerometer full scale range to 4G
+    mpu_config(&p_mpu_config);
 }
 
 
@@ -344,48 +275,24 @@ static void mpu_setup(void)
  */
 int main(void)
 {
-    uint32_t err_code;
+    int16_t cosine = 0;
 
-    int16_t cosine 				= 0;
-
-    err_code = NRF_LOG_INIT(NULL);
-    APP_ERROR_CHECK(err_code);
+    NRF_LOG_INIT(NULL);
     NRF_LOG_INFO("###################### System Started ####################\r\n");
     APP_TIMER_INIT(APP_TIMER_PRESCALER, APP_TIMER_OP_QUEUE_SIZE, false); //(0,4,false)
-    err_code = app_timer_create(&alarm_timer_id1, APP_TIMER_MODE_REPEATED, app_timer_handler1);
-    APP_ERROR_CHECK(err_code);
-    err_code = app_timer_create(&alarm_timer_id2, APP_TIMER_MODE_REPEATED, app_timer_handler2);
-    APP_ERROR_CHECK(err_code);
-    err_code = app_timer_start(alarm_timer_id2, APP_TIMER_TICKS(IMU_GET_INTERVAL, APP_TIMER_PRESCALER), NULL); // timer2 interval 5 ms
-    APP_ERROR_CHECK(err_code);
+    app_timer_create(&alarm_timer_id1, APP_TIMER_MODE_REPEATED, app_timer_handler1);
+    app_timer_create(&alarm_timer_id2, APP_TIMER_MODE_REPEATED, app_timer_handler2);
+    app_timer_start(alarm_timer_id2, APP_TIMER_TICKS(IMU_GET_INTERVAL, APP_TIMER_PRESCALER), NULL); // timer2 interval 5 ms
     ble_stack_init();
-	err_code = sd_ble_gap_tx_power_set(-20);
-	APP_ERROR_CHECK(err_code);
+	sd_ble_gap_tx_power_set(-20);
     gpio_configure();
     mpu_setup();
-
-
-//    uint8_t out_data[13]					   = {0x0c,0xff,'T','O','N','G',0,0,4,9,0,0,0};
-//    uint8_t out_data[13]					   = {0x0c,0xff,'T','O','N','G',0,0,4,8,0,0,0};
-//    uint8_t out_data[13]					   = {0x0c,0xff,'T','O','N','G',2,6,7,0,8,2,7};
-//    uint8_t out_data[13]					   = {0x0c,0xff,'T','O','N','G',2,5,3,0,3,2,8};
-//    uint8_t out_data[13]					   = {0x0c,0xff,'T','O','N','G',0,0,12,8,0,0,0};
-//    sd_ble_gap_adv_data_set(out_data, sizeof(out_data), NULL, 0); // 用这句话来躲避掉flag
-//    advertising_start();
-//    scanning_start();
 
     for (;; )
     {
     	if(get_acceleration && !fall_detected) //the program will get here at 200 Hz
     	{
-			err_code = mpu_read_accel(&acc_values);
-			APP_ERROR_CHECK(err_code);
-
-//			NRF_LOG_INFO("X: %06d   Y: %06d   Z: %06d\r\n", acc_values.x, acc_values.y, acc_values.z);
-//			if(acc_values.x != 0)
-//			{
-//				NRF_GPIO->OUT ^= (1 << 17);
-//			}
+			mpu_read_accel(&acc_values);
 
 			if(cali)	// at the beginning of the program, the device will measure the gravity vector, do not shake the device.
 			{
