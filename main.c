@@ -33,9 +33,9 @@ APP_TIMER_DEF(alarm_timer_id2);
 
 
 #define     						SELF_NUMBER 		  	5
-#define     						ALARM_SENDING_TIME_MIN	5			// 2500 ms
-#define     						ALARM_SENDING_TIME_MAX	30			// 15000 ms
-#define     						ADV_COUNT_INTERVAL		500			// timer1 interval 500 ms
+#define     						ALARM_SENDING_TIME_MIN	10			// 5000 ms
+#define     						ALARM_SENDING_TIME_MAX	180
+#define     						ADV_COUNT_INTERVAL		1000		// timer1 interval 1000 ms
 #define     						IMU_GET_INTERVAL		5			// timer2 5 ms // 200 Hz
 #define     						V_THRESHOLD				7 			//0.7 // m/s
 #define     						RSS_THRESHOLD			28			//2.8 // 2.8*g
@@ -90,8 +90,8 @@ const ble_gap_scan_params_t m_scan_params =
     .active      					= 0,
     .use_whitelist   				= 0,
     .adv_dir_report 				= 0,
-    .interval    					= 0x0040,	//1 second
-    .window      					= 0x0040,   //0x0030 is 30ms
+    .interval    					= 0x0020,	//1 second
+    .window      					= 0x0020,   //0x0030 is 30ms
     .timeout     					= 0
   };
 
@@ -108,7 +108,7 @@ static void app_timer_handler1(void * p_context)
 	NRF_GPIO->OUT ^= (1 << 20);
 	advertising_time_count++;
 	sd_ble_gap_adv_stop();
-	uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,0,advertising_time_count,SELF_NUMBER};
+	uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,3,SELF_NUMBER,advertising_time_count};
 	sd_ble_gap_adv_data_set(alarm, sizeof(alarm), NULL, 0);
 	advertising_start();
 	try_stop_advertising();
@@ -164,7 +164,7 @@ static void get_adv_data(ble_evt_t * p_ble_evt)
 				if(p_data[a+4]== 0) // ALARM_NODE;
 				{
 					return;
-				}else
+				}else if(p_data[a+4] >= 2)
 				{
 					node_type = RELAY_NODE;
 				}
@@ -173,14 +173,16 @@ static void get_adv_data(ble_evt_t * p_ble_evt)
 			switch(node_type)
 			{
 			case CENTER_NODE:
-				if((p_data[a+10] - 48) * 16 + (p_data[a+11] - 48) == SELF_NUMBER) // "TONG0100" + "alarm node number"
+				if(((p_data[a+6] - 48) * 16 + (p_data[a+7] - 48) == 2)
+						&& ((p_data[a+8] - 48) * 16 + (p_data[a+9] - 48) == 0)
+						&& ((p_data[a+10] - 48) * 16 + (p_data[a+11] - 48) == SELF_NUMBER)) // "TONG010200" + "alarm node number"
 				{
 					ACK_received = true;
 				}
 				break;
 
 			case RELAY_NODE:
-				if(p_data[a+7] == SELF_NUMBER)
+				if((p_data[a+7] == SELF_NUMBER) && (p_data[a+6] == 0) && (p_data[a+5] == 2))
 				{
 					ACK_received = true;
 				}
@@ -189,6 +191,7 @@ static void get_adv_data(ble_evt_t * p_ble_evt)
 			case NONE:
 				break;
 			}
+			try_stop_advertising();
 			return;
 		}
 		index += field_length + 1;
@@ -247,7 +250,7 @@ static void power_manage(void)
 
 static void start_loop(void)
 {
-	uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,0,advertising_time_count,SELF_NUMBER};
+	uint8_t	alarm[10] = {0x09, 0xff,'T','O','N','G',0,3,SELF_NUMBER,advertising_time_count};
 	sd_ble_gap_adv_data_set(alarm, sizeof(alarm), NULL, 0);
 	advertising_start();
 	scanning_start();
